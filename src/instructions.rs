@@ -265,6 +265,7 @@ impl Cpu {
     }
     pub(crate) fn compare(&mut self, inst: u8, reg: u8) {
         let operand = self.read_operand(inst, true);
+        self.trace_text.push_str(&format!(" <=> {:02X} ", operand));
         let result = (reg as i8).wrapping_sub(operand as i8);
         self.status.set(Status::CARRY, reg >= operand);
         self.status.set(Status::ZERO, operand == reg);

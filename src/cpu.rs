@@ -275,7 +275,7 @@ impl Cpu {
                 0xf9 => self.sbc(inst),
                 0xfd => self.sbc(inst),
                 0xfe => self.inc(inst),
-                _ => assert!(false),
+                _ => assert!(false, "Unknown instruction {:02X}", inst),
             }
             trace!(
                 "PC: {:04X}, X:{:02X} Y:{:02X} AC:{:02X} S:{:02X} ST:{:?} inst:{:02X} {}",
@@ -310,6 +310,11 @@ impl Cpu {
 
     pub(crate) fn read_operand(&mut self, inst: u8, adjust_pc: bool) -> u8 {
         match inst {
+            0x0a | 0x2a | 0x4a | 0x6a => {
+                // accumulator
+                self.trace_text.push_str("A");
+                self.ac
+            }
             0xA2 | 0xa0 | 0xc0 | 0xe0 => {
                 // immediate
                 if adjust_pc {
@@ -338,8 +343,9 @@ impl Cpu {
         }
     }
     pub(crate) fn write_operand(&mut self, inst: u8, val: u8) {
-        if inst & 0b000_111_00 == 0b000_101_00 {
+        if inst == 0x0a || inst == 0x2a || inst == 0x4a || inst == 0x6a {
             // accumulator
+            self.trace_text.push_str("A");
             self.ac = val;
             return;
         }
@@ -385,7 +391,7 @@ impl Cpu {
                 // abs,y
                 self.abs_y()
             }
-            0b000_000_00 => {
+            0b000_100_00 => {
                 // (ind),y
                 let zpaddr = self.read(self.pc) as u16;
 
@@ -394,14 +400,18 @@ impl Cpu {
                 self.trace_text.push_str(&format!("(${:02X}),Y", zpaddr));
                 (((hi << 8) | lo) + self.iy as u16, 1)
             }
-            0b000_100_00 => {
+            0b000_000_00 => {
                 // (ind,x)
-                let zpaddr = self.read(self.pc) as u16;
+                let zpaddr = self.read(self.pc);
+                let offadd1 = zpaddr.wrapping_add(self.ix);
+                let offadd2 = zpaddr.wrapping_add(self.ix.wrapping_add(1));
 
-                let lo = self.read(zpaddr.wrapping_add(self.ix as u16)) as u16;
-                let hi = self.read(zpaddr.wrapping_add(self.ix as u16) + 1) as u16;
-                self.trace_text.push_str(&format!("(${:02X},X)", zpaddr));
-                ((hi << 8) | lo, 1)
+                let lo = self.read(offadd1 as u16) as u16;
+                let hi = self.read(offadd2 as u16) as u16;
+                let dest = (hi << 8) | lo;
+                self.trace_text
+                    .push_str(&format!("(${:02X},X) = {:04x}", zpaddr, dest));
+                ((dest), 1)
             }
             _ => panic!("Unknown addr format: {:02X}", inst),
         };
@@ -410,30 +420,34 @@ impl Cpu {
     fn abs_y(&mut self) -> (u16, u16) {
         let lo = self.read(self.pc) as u16;
         let hi = self.read(self.pc + 1) as u16;
+        let dest = ((hi << 8) | lo).wrapping_add(self.iy as u16);
         self.trace_text
-            .push_str(&format!("${:02X}{:02X},Y", hi, lo));
-        (((hi << 8) | lo).wrapping_add(self.iy as u16), 2)
+            .push_str(&format!("${:02X}{:02X},X = {:04X}", hi, lo, dest));
+        (dest, 2)
     }
     fn abs_x(&mut self) -> (u16, u16) {
         let lo = self.read(self.pc) as u16;
         let hi = self.read(self.pc + 1) as u16;
+        let dest = ((hi << 8) | lo).wrapping_add(self.ix as u16);
         self.trace_text
-            .push_str(&format!("${:02X}{:02X},X", hi, lo));
-        (((hi << 8) | lo).wrapping_add(self.ix as u16), 2)
+            .push_str(&format!("${:02X}{:02X},X = {:04X}", hi, lo, dest));
+        (dest, 2)
     }
     fn zpg_x(&mut self) -> (u16, u16) {
         // zpg, x
-        let zpaddr = self.read(self.pc) as u16;
+        let zpaddr = self.read(self.pc) as u8;
+        let dest = zpaddr.wrapping_add(self.ix);
         self.trace_text
-            .push_str(&format!("${:02X},X", zpaddr as u8));
-        (zpaddr.wrapping_add(self.ix as u16), 1)
+            .push_str(&format!("${:02X},X = {:04X}", zpaddr as u8, dest));
+        (dest as u16, 1)
     }
     fn zpg_y(&mut self) -> (u16, u16) {
         // zpg, y
-        let zpaddr = self.read(self.pc) as u16;
+        let zpaddr = self.read(self.pc) as u8;
+        let dest = zpaddr.wrapping_add(self.iy);
         self.trace_text
-            .push_str(&format!("${:02X},Y", zpaddr as u8));
-        (zpaddr.wrapping_add(self.iy as u16), 1)
+            .push_str(&format!("${:02X},Y = {:04X}", zpaddr as u8, dest));
+        (dest as u16, 1)
     }
     pub(crate) fn read(&self, addr: u16) -> u8 {
         self.ram[addr as usize]
