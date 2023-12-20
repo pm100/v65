@@ -1,4 +1,5 @@
 use core::fmt;
+use std::{collections::HashMap, io::Write};
 
 use bitflags::bitflags;
 
@@ -11,6 +12,9 @@ pub(crate) struct Cpu {
     pub(crate) iy: u8,
     pub(crate) status: Status,
     pub(crate) trace_text: String,
+    pub(crate) iotraps: HashMap<u16, fn(&mut Cpu)>,
+    buffer: String,
+    ramtop: u16,
 }
 
 bitflags! {
@@ -80,7 +84,7 @@ pub(crate) const STACK_SIZE: u8 = 0xff;
 
 impl Cpu {
     pub(crate) fn new() -> Cpu {
-        Cpu {
+        let mut cpu = Cpu {
             ram: vec![0; 0x10000],
             pc: 0,
             sp: 0,
@@ -89,7 +93,31 @@ impl Cpu {
             iy: 0,
             status: Status::empty() | Status::IDISABLE,
             trace_text: String::new(),
+            iotraps: HashMap::new(),
+            buffer: String::new(),
+            ramtop: 0x8000,
+        };
+        //          MONRDKEY        := $1E5A
+        //          MONCOUT         := $1EA0
+        cpu.iotraps.insert(0x1e5a, Cpu::trap_rdkey);
+        cpu.iotraps.insert(0x1ea0, Cpu::trap_cout);
+        cpu
+    }
+    pub(crate) fn trap_rdkey(&mut self) {
+        if self.buffer.len() == 0 {
+            let mut line = String::new();
+            let r = std::io::stdin().read_line(&mut line).unwrap();
+            self.buffer = line[0..r - 2].to_string();
+            trace!("rdkey. buff={} len={}", self.buffer, self.buffer.len());
+            self.buffer.push('\r');
         }
+        let val = self.buffer.remove(0) as u8;
+        trace!("return {:02X}", val);
+        self.ac = val;
+    }
+    pub(crate) fn trap_cout(&mut self) {
+        print!("{}", self.ac as char);
+        std::io::stdout().flush().unwrap();
     }
     pub(crate) fn reset(&mut self) {
         self.pc = 0xfffc;
@@ -338,7 +366,10 @@ impl Cpu {
                 if adjust_pc {
                     self.pc += delta;
                 }
-                return self.read(opaddr);
+
+                let v = self.read(opaddr);
+                self.trace_text.push_str(&format!("#${:02X} ", v));
+                return v;
             }
         }
     }
@@ -352,6 +383,10 @@ impl Cpu {
         let (opaddr, delta) = self.operand_addr(inst);
         self.pc += delta;
         self.write(opaddr, val);
+        if opaddr == 0 {
+            self.trace_text.push_str(" = 00");
+        }
+        self.trace_text.push_str(format!(" = {:02X}", val).as_str());
     }
 
     fn operand_addr(&mut self, inst: u8) -> (u16, u16) {
@@ -450,6 +485,9 @@ impl Cpu {
         (dest as u16, 1)
     }
     pub(crate) fn read(&self, addr: u16) -> u8 {
+        if addr > self.ramtop || addr == 0x1740 {
+            return 0xff;
+        }
         self.ram[addr as usize]
     }
     pub(crate) fn write(&mut self, addr: u16, val: u8) {

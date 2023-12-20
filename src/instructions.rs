@@ -42,9 +42,15 @@ impl Cpu {
         let lo = self.read(self.pc) as u16;
         let hi = self.read(self.pc + 1) as u16;
         let addr = (hi << 8) | lo;
-        self.push(((self.pc + 1) >> 8) as u8);
-        self.push((self.pc + 1) as u8);
-        self.pc = addr;
+
+        if let Some(trap) = self.iotraps.get(&addr) {
+            self.pc += 2;
+            (trap)(self);
+        } else {
+            self.push(((self.pc + 1) >> 8) as u8);
+            self.push((self.pc + 1) as u8);
+            self.pc = addr;
+        }
     }
     pub(crate) fn and(&mut self, inst: u8) {
         self.trace_text = String::from("AND ");
@@ -112,6 +118,9 @@ impl Cpu {
         let lo = self.read(self.pc) as u16;
         let hi = self.read(self.pc + 1) as u16;
         let addr = (hi << 8) | lo;
+        if addr + 1 == self.pc {
+            log::logger().flush();
+        };
         assert_ne!(
             addr + 1,
             self.pc,
@@ -146,13 +155,16 @@ impl Cpu {
     pub(crate) fn adc(&mut self, inst: u8) {
         self.trace_text = String::from("ADC ");
         let operand = self.read_operand(inst, true);
-        let result = self.ac as u16 + operand as u16 + self.status.contains(Status::CARRY) as u16;
-        self.status.set(Status::CARRY, result > 0xFF);
+
+        let (result, c, v) = if self.status.contains(Status::DECIMAL) {
+            crate::adc_dec(self.ac, operand, self.status.contains(Status::CARRY))
+        } else {
+            crate::adc(self.ac, operand, self.status.contains(Status::CARRY))
+        };
+
+        self.status.set(Status::CARRY, c);
         self.status.set(Status::ZERO, result & 0xFF == 0);
-        self.status.set(
-            Status::OVF,
-            (self.ac ^ result as u8) & (operand ^ result as u8) & 0x80 != 0,
-        );
+        self.status.set(Status::OVF, v);
         self.status.set(Status::NEGATIVE, result & 0x80 != 0);
         self.ac = result as u8;
     }
@@ -303,13 +315,15 @@ impl Cpu {
     pub(crate) fn sbc(&mut self, inst: u8) {
         self.trace_text = String::from("SBC ");
         let operand = self.read_operand(inst, true);
-        let result = self.ac as u16 - operand as u16 - !self.status.contains(Status::CARRY) as u16;
-        self.status.set(Status::CARRY, result < 0x100);
+
+        let (result, carry, ovf) = if self.status.contains(Status::DECIMAL) {
+            crate::sbc_dec(self.ac, operand, self.status.contains(Status::CARRY))
+        } else {
+            crate::sbc(self.ac, operand, self.status.contains(Status::CARRY))
+        };
         self.status.set(Status::ZERO, result & 0xFF == 0);
-        self.status.set(
-            Status::OVF,
-            (self.ac ^ result as u8) & (!operand ^ result as u8) & 0x80 != 0,
-        );
+        self.status.set(Status::OVF, ovf);
+        self.status.set(Status::CARRY, carry);
         self.status.set(Status::NEGATIVE, result & 0x80 != 0);
         self.ac = result as u8;
     }
@@ -378,6 +392,9 @@ impl Cpu {
         ));
 
         if self.status.contains(flag) {
+            if delta == -2 {
+                log::logger().flush();
+            }
             assert!(delta != -2, "Infinite loop detected at {:04X}", self.pc - 1);
             self.pc = self.pc.wrapping_add_signed(delta as i16);
         }
@@ -391,6 +408,9 @@ impl Cpu {
             self.pc.wrapping_add_signed(delta as i16)
         ));
         if !self.status.contains(flag) {
+            if delta == -2 {
+                log::logger().flush();
+            }
             assert!(delta != -2, "Infinite loop detected at {:04X}", self.pc - 1);
             self.pc = self.pc.wrapping_add_signed(delta as i16);
         }
